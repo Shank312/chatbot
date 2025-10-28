@@ -1,0 +1,46 @@
+
+
+# from project root /d/chatbot
+cp backend/app.py backend/app.py.bak
+
+cat > backend/app.py <<'PY'
+from fastapi import FastAPI, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
+from .rag_agent import generate_response
+from .memory_store import session_store
+
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.post("/chat")
+async def chat(message: dict):
+    session_id = message.get("session_id", "default")
+    user_msg = message["message"]
+    session_store.add_message(session_id, "user", user_msg)
+    # generate_response can be sync; keep simple for MVP
+    reply = generate_response(session_id, user_msg)
+    session_store.add_message(session_id, "bot", reply)
+    return {"reply": reply}
+
+@app.websocket("/ws/chat")
+async def websocket_chat(ws: WebSocket):
+    await ws.accept()
+    session_id = "default"
+    try:
+        while True:
+            user_msg = await ws.receive_text()
+            session_store.add_message(session_id, "user", user_msg)
+            # stream tokens (generator) to client
+            for token in generate_response(session_id, user_msg, stream=True):
+                await ws.send_text(token)
+            await ws.send_text("[END]")
+    except Exception:
+        # client disconnected or other error
+        await ws.close()
+PY
